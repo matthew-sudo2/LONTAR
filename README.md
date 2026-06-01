@@ -31,3 +31,77 @@ LONTAR operates as a high-density "Compression Funnel":
 ├── data/                 # Local JSON dumps and ChromaDB storage
 ├── outputs/              # Generated Markdown/PDF reports
 └── requirements.txt      # Project dependencies
+```
+
+## Setup (Windows PowerShell)
+1. Create and activate the virtual environment:
+	```powershell
+	python -m venv .venv
+	.\.venv\Scripts\Activate.ps1
+	```
+2. Upgrade pip and install dependencies:
+	```powershell
+	python -m pip install --upgrade pip
+	python -m pip install -r requirements.txt
+	```
+3. Create your local env file and paste API keys:
+	```powershell
+	Copy-Item .env.example .env
+	```
+
+## Environment Variables
+Fill in these values in your local `.env` file (do not commit it):
+- `GEMINI_API_KEY`
+- `SEMANTIC_SCHOLAR_API_KEY`
+- `COHERE_API_KEY`
+- `GROQ_API_KEY`
+
+## Quick Verification
+```powershell
+python -c "import google.genai, openalex, semanticscholar, cohere, chromadb, pandas, pydantic, dotenv; print('OK')"
+```
+
+## Phase 1: Ingestion Run
+Run the ingestion script with a list of ingredients. Results are written to `data/ingestion.json` by default.
+```powershell
+python -m src.ingestion Macadamia Turmeric Pepperberry
+```
+Optional flags:
+- `--openalex-pages 2`
+- `--semantic-pages 2`
+- `--pubmed-pages 2`
+- `--core-pages 2`
+- `--per-page 25`
+- `--out data/ingestion.csv`
+
+CORE ingestion is enabled when `CORE_API_KEY` is set in your environment.
+
+## Phase 2: Guardrails + Chroma Embedding
+Phase 2 filters low-quality records, deduplicates, and embeds abstracts into ChromaDB.
+```powershell
+python -m src.phase2 --min-citations 5 --recent-year 2024
+```
+Key options:
+- `--input data/ingestion.json`
+- `--filtered-out data/filtered.json`
+- `--collection lontar_ingredient_research`
+- `--chroma-path data/chroma`
+- `--cohere-model embed-multilingual-v3.0`
+
+## Phase 3: Generation Engine
+Phase 3 retrieves the best matches from ChromaDB and generates the final report with Gemini.
+```powershell
+python -m src.phase3 Macadamia Turmeric Pepperberry
+```
+Key options:
+- `--top-k 12`
+- `--collection lontar_ingredient_research`
+- `--chroma-path data/chroma`
+- `--cohere-model embed-multilingual-v3.0`
+- `--gemini-model gemini-2.0-flash`
+- `--gemini-retries 2`
+- `--gemini-backoff 2.5`
+- `--llm-provider groq`
+- `--groq-model llama-3.3-70b-versatile`
+- `--out-json outputs/report.json`
+- `--out-md outputs/report.md`

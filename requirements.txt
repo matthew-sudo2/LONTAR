@@ -1,0 +1,10 @@
+google-genai
+groq
+httpx
+openalex
+semanticscholar
+cohere
+chromadb
+pandas
+pydantic
+python-dotenv

@@ -1,0 +1,78 @@
+{
+  "health_claim_matrix": [
+    {
+      "ingredient": "Turmeric",
+      "claim": "Antioxidant",
+      "evidence_dois": [
+        "10.1080/10408398.2015.1077195"
+      ],
+      "evidence_titles": [
+        "Curcumin, an active component of turmeric (Curcuma longa), and its effects on health"
+      ]
+    },
+    {
+      "ingredient": "Turmeric",
+      "claim": "Anti-inflammatory",
+      "evidence_dois": [
+        "10.1080/10408398.2015.1077195"
+      ],
+      "evidence_titles": [
+        "Curcumin, an active component of turmeric (Curcuma longa), and its effects on health"
+      ]
+    },
+    {
+      "ingredient": "Turmeric",
+      "claim": "Anticancer",
+      "evidence_dois": [
+        "10.1080/10408398.2015.1077195"
+      ],
+      "evidence_titles": [
+        "Curcumin, an active component of turmeric (Curcuma longa), and its effects on health"
+      ]
+    },
+    {
+      "ingredient": "Turmeric",
+      "claim": "Hypoglycemic",
+      "evidence_dois": [
+        "10.1021/jf0483873",
+        "10.1016/j.foodchem.2026.149731"
+      ],
+      "evidence_titles": [
+        "Curcuminoids and Sesquiterpenoids in Turmeric (Curcuma longa L.) Suppress an Increase in Blood Glucose Level in Type 2 Diabetic KK-AyMice",
+        "Inhibition effects and mechanisms of three curcuminoids against α-glucosidase"
+      ]
+    }
+  ],
+  "synergy_coefficients": [
+    {
+      "ingredients": [
+        "Turmeric",
+        "Curcumin"
+      ],
+      "mechanism": "PPAR-gamma activation",
+      "evidence_dois": [
+        "10.1021/jf0483873"
+      ]
+    }
+  ],
+  "safety_dosage_dossier": [
+    {
+      "ingredient": "Turmeric",
+      "guidance": "Non-toxic and safe for human consumption, especially in oral administration",
+      "evidence_dois": [
+        "10.1002/ptr.6054"
+      ]
+    },
+    {
+      "ingredient": "Curcumin",
+      "guidance": "Safe at the dose of 6 g/day orally for 4-7 weeks",
+      "evidence_dois": [
+        "10.1002/ptr.6054"
+      ]
+    }
+  ],
+  "limitations": [
+    "More studies are needed to confirm the efficacy and safety of turmeric and curcumin in humans",
+    "The bioavailability of curcumin is low, which may limit its therapeutic effects"
+  ]
+}
