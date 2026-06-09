@@ -28,7 +28,7 @@ class StudyRecord(BaseModel):
     abstract: Optional[str] = None
     authors: list[str] = Field(default_factory=list)
     url: Optional[str] = None
-    external_ids: dict[str, str] = Field(default_factory=dict)
+    external_ids: dict[str, str | int] = Field(default_factory=dict)
 
 
 def build_query(ingredients: Iterable[str]) -> str:
