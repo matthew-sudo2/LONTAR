@@ -87,17 +87,20 @@ def build_chunks(records: Iterable[dict]) -> list[dict]:
         raw_id = f"{record.get('source','')}|{doi or source_id}|{record.get('title','')}"
         chunk_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
 
-        metadata = {
-            "source": record.get("source"),
-            "title": record.get("title"),
-            "doi": doi,
-            "year": record.get("year"),
-            "citation_count": record.get("citation_count"),
-            "url": record.get("url"),
-        }
+        metadata = {}
+        raw_metadata_fields = [
+            ("source", record.get("source")),
+            ("title", record.get("title")),
+            ("doi", doi),
+            ("year", record.get("year")),
+            ("citation_count", record.get("citation_count")),
+            ("url", record.get("url")),
+        ]
+        for key, value in raw_metadata_fields:
+            if value is not None: 
+                metadata[key] = value
         chunks.append({"id": chunk_id, "text": text, "metadata": metadata})
     return chunks
-
 
 def batch_iter(items: list[dict], batch_size: int) -> Iterable[list[dict]]:
     for start in range(0, len(items), batch_size):
