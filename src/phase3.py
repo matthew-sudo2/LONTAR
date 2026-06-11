@@ -128,6 +128,7 @@ def build_prompt(ingredients: Iterable[str], sources: list[dict]) -> str:
         source_blocks.append("\n".join(block))
 
     schema = Report.model_json_schema()
+    joined_sources_text = "\n\n".join(source_blocks)
     return (
         "You are a scientific report generator. "
         "Return JSON only. Do not include markdown or explanations.\n\n"
@@ -138,7 +139,7 @@ def build_prompt(ingredients: Iterable[str], sources: list[dict]) -> str:
         "JSON schema:\n"
         f"{json.dumps(schema, indent=2)}\n\n"
         "Source documents:\n"
-        f"{'\n\n'.join(source_blocks)}"
+        f"{joined_sources_text}"
     )
 
 
