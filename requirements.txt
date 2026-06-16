@@ -7,7 +7,7 @@ semanticscholar
 cohere
 chromadb>=1.5.9
 opentelemetry-proto>=1.42.1
-protobuf<5
+protobuf>=5.29.6,<6
 pandas
 pydantic
 python-dotenv
