@@ -5,7 +5,9 @@ httpx
 openalex
 semanticscholar
 cohere
-chromadb
+chromadb>=1.5.9
+opentelemetry-proto>=1.42.1
+protobuf<=3.20.3
 pandas
 pydantic
 python-dotenv
