@@ -31,7 +31,7 @@ class StudyRecord(BaseModel):
     external_ids: dict[str, str | int] = Field(default_factory=dict)
 
 
-def build_query(ingredients: Iterable[str]) -> str:
+def build_query(ingredients: Iterable[str], focus: Optional[str] = None) -> str:
     cleaned: list[str] = []
     for item in ingredients:
         term = " ".join(item.strip().split())
@@ -40,7 +40,17 @@ def build_query(ingredients: Iterable[str]) -> str:
         if " " in term and not (term.startswith('"') and term.endswith('"')):
             term = f'"{term}"'
         cleaned.append(term)
-    return " OR ".join(cleaned)
+    
+    base_query = " OR ".join(cleaned)
+    if not base_query:
+        return ""
+        
+    if focus == "Health & Clinical Therapy":
+        return f"({base_query}) AND (health OR therapy OR medicinal OR clinical OR treatment OR pharmacology)"
+    elif focus == "Agriculture & Botany":
+        return f"({base_query}) AND (agriculture OR botany OR cultivation OR farming OR genetics)"
+    
+    return base_query
 
 
 def normalize_doi(doi: Optional[str]) -> Optional[str]:
@@ -373,6 +383,7 @@ async def fetch_core(
 async def ingest_ingredients(
     ingredients: Iterable[str],
     *,
+    focus: Optional[str] = None,
     openalex_pages: int = 2,
     semantic_scholar_pages: int = 2,
     pubmed_pages: int = 2,
@@ -381,7 +392,7 @@ async def ingest_ingredients(
 ) -> list[StudyRecord]:
     load_dotenv()
 
-    query = build_query(ingredients)
+    query = build_query(ingredients, focus=focus)
     if not query:
         return []
 

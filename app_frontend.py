@@ -188,6 +188,15 @@ with tab1:
             "Target Research Ingredients (comma separated)",
             "Curcuma longa, Piper nigrum",
         )
+        research_focus = st.selectbox(
+            "Research Focus",
+            [
+                "Health & Clinical Therapy",
+                "Agriculture & Botany",
+                "Broad/Generic (No Filter)",
+            ],
+            index=0,
+        )
         per_page = st.number_input("Records per engine page", min_value=1, max_value=50, value=10)
 
     with col2:
@@ -207,6 +216,7 @@ with tab1:
                     records = asyncio.run(
                         ingest_ingredients(
                             ingredients=ingredients_list,
+                            focus=research_focus,
                             openalex_pages=openalex,
                             semantic_scholar_pages=semantic,
                             pubmed_pages=pubmed,
