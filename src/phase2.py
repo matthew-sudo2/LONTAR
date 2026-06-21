@@ -115,6 +115,7 @@ def embed_and_upsert(
     cohere_model: str,
     batch_size: int,
 ) -> None:
+    load_dotenv()
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
         raise RuntimeError("COHERE_API_KEY is required for embeddings.")

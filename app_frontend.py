@@ -10,7 +10,6 @@ from src.ingestion import ingest_ingredients, records_to_dicts
 from src.phase2 import build_chunks, embed_and_upsert, filter_records
 from src.phase3 import (
     build_prompt,
-    generate_report,
     generate_report_groq,
     retrieve_sources,
 )
@@ -340,20 +339,28 @@ with tab3:
 
     col1, col2 = st.columns(2)
     with col1:
-        synth_collection = st.text_input(
+        synth_collection = st.selectbox(
             "Retrieval Collection",
-            st.session_state.active_collection,
+            [st.session_state.active_collection],
+            index=0,
         )
         synth_cohere_model = st.selectbox(
             "Retrieval Cohere Model",
             ["embed-v4.0", "embed-multilingual-v3.0"],
             index=0 if st.session_state.active_cohere_model == "embed-v4.0" else 1,
         )
-        top_k = st.slider("Source Documents to Retrieve", 1, 25, 12)
     with col2:
-        llm_provider = st.selectbox("Generation Provider", ["groq", "gemini"])
-        groq_model = st.text_input("Groq Model", "llama-3.3-70b-versatile")
-        gemini_model = st.text_input("Gemini Model", "gemini-2.0-flash")
+        groq_model = st.selectbox(
+            "Groq Model",
+            [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "mixtral-8x7b-32768",
+                "gemma2-9b-it",
+            ],
+            index=0,
+        )
+        top_k = st.slider("Source Documents to Retrieve", 1, 25, 12)
 
     if st.button("Generate Comprehensive Report", type="primary"):
         ingredients_list = clean_ingredients(synth_ingredients)
@@ -378,15 +385,7 @@ with tab3:
                         st.stop()
 
                     prompt = build_prompt(ingredients_list, sources)
-                    if llm_provider == "groq":
-                        report = generate_report_groq(prompt, model_name=groq_model)
-                    else:
-                        report = generate_report(
-                            prompt,
-                            model_name=gemini_model,
-                            max_retries=3,
-                            backoff_seconds=2.0,
-                        )
+                    report = generate_report_groq(prompt, model_name=groq_model)
 
                     st.success("Report successfully generated.")
                     st.markdown("---")
