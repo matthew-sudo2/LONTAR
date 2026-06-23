@@ -12,6 +12,8 @@ import httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from src.relevance import focus_query_terms, group_query_terms
+
 OPENALEX_BASE_URL = "https://api.openalex.org/works"
 SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 PUBMED_ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -32,24 +34,14 @@ class StudyRecord(BaseModel):
 
 
 def build_query(ingredients: Iterable[str], focus: Optional[str] = None) -> str:
-    cleaned: list[str] = []
-    for item in ingredients:
-        term = " ".join(item.strip().split())
-        if not term:
-            continue
-        if " " in term and not (term.startswith('"') and term.endswith('"')):
-            term = f'"{term}"'
-        cleaned.append(term)
-    
-    base_query = " OR ".join(cleaned)
+    base_query = group_query_terms(ingredients)
     if not base_query:
         return ""
-        
-    if focus == "Health & Clinical Therapy":
-        return f"({base_query}) AND (health OR therapy OR medicinal OR clinical OR treatment OR pharmacology)"
-    elif focus == "Agriculture & Botany":
-        return f"({base_query}) AND (agriculture OR botany OR cultivation OR farming OR genetics)"
-    
+
+    focus_terms = focus_query_terms(focus)
+    if focus_terms:
+        return f"({base_query}) AND ({focus_terms})"
+
     return base_query
 
 
@@ -493,6 +485,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--core-pages", type=int, default=2)
     parser.add_argument("--per-page", type=int, default=25)
     parser.add_argument(
+        "--focus",
+        default=None,
+        choices=[
+            "Health & Clinical Therapy",
+            "Agriculture & Botany",
+            "Broad/Generic (No Filter)",
+        ],
+        help="Optional research focus used to shape repository queries.",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path("data") / "ingestion.json",
@@ -512,6 +514,7 @@ def main() -> None:
             pubmed_pages=args.pubmed_pages,
             core_pages=args.core_pages,
             per_page=args.per_page,
+            focus=args.focus,
         )
     )
     save_records(fetched, args.out)

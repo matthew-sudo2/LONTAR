@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 from typing import Iterable, Optional
 
-import chromadb
-import cohere
+from src.relevance import evaluate_record_relevance
+
 from dotenv import load_dotenv
 
 
@@ -47,6 +47,8 @@ def filter_records(
     *,
     min_citations: int,
     recent_year: int,
+    ingredients: Optional[Iterable[str]] = None,
+    focus: Optional[str] = None,
 ) -> list[dict]:
     seen: set[str] = set()
     filtered: list[dict] = []
@@ -54,6 +56,14 @@ def filter_records(
     for record in records:
         abstract = (record.get("abstract") or "").strip()
         if not abstract:
+            continue
+
+        relevance = evaluate_record_relevance(
+            record,
+            ingredients=ingredients,
+            focus=focus,
+        )
+        if relevance["relevance_status"] != "accepted":
             continue
 
         citation_count = record.get("citation_count")
@@ -70,9 +80,12 @@ def filter_records(
         if key:
             seen.add(key)
 
-        record["abstract"] = abstract
-        filtered.append(record)
+        accepted_record = dict(record)
+        accepted_record["abstract"] = abstract
+        accepted_record.update(relevance)
+        filtered.append(accepted_record)
 
+    filtered.sort(key=lambda item: item.get("relevance_score", 0), reverse=True)
     return filtered
 
 
@@ -95,6 +108,7 @@ def build_chunks(records: Iterable[dict]) -> list[dict]:
             ("year", record.get("year")),
             ("citation_count", record.get("citation_count")),
             ("url", record.get("url")),
+            ("relevance_score", record.get("relevance_score")),
         ]
         for key, value in raw_metadata_fields:
             if value is not None: 
@@ -119,6 +133,9 @@ def embed_and_upsert(
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
         raise RuntimeError("COHERE_API_KEY is required for embeddings.")
+
+    import chromadb
+    import cohere
 
     client = cohere.Client(api_key)
     chroma_client = chromadb.PersistentClient(path=str(chroma_path))
@@ -159,6 +176,16 @@ def parse_args() -> argparse.Namespace:
         default="embed-multilingual-v3.0",
     )
     parser.add_argument("--batch-size", type=int, default=48)
+    parser.add_argument("--ingredients", nargs="*", default=None)
+    parser.add_argument(
+        "--focus",
+        default=None,
+        choices=[
+            "Health & Clinical Therapy",
+            "Agriculture & Botany",
+            "Broad/Generic (No Filter)",
+        ],
+    )
     return parser.parse_args()
 
 
@@ -171,6 +198,8 @@ def main() -> None:
         records,
         min_citations=args.min_citations,
         recent_year=args.recent_year,
+        ingredients=args.ingredients,
+        focus=args.focus,
     )
     args.filtered_out.parent.mkdir(parents=True, exist_ok=True)
     args.filtered_out.write_text(json.dumps(filtered, indent=2), encoding="utf-8")

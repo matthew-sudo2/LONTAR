@@ -6,12 +6,10 @@ import os
 from pathlib import Path
 from typing import Iterable, Optional
 
-import chromadb
-import cohere
-from google import genai
-from groq import Groq
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
+
+from src.relevance import evaluate_record_relevance, group_query_terms
 
 
 class HealthClaim(BaseModel):
@@ -41,15 +39,7 @@ class Report(BaseModel):
 
 
 def build_query(ingredients: Iterable[str]) -> str:
-    cleaned: list[str] = []
-    for item in ingredients:
-        term = " ".join(item.strip().split())
-        if not term:
-            continue
-        if " " in term and not (term.startswith('"') and term.endswith('"')):
-            term = f'"{term}"'
-        cleaned.append(term)
-    return " OR ".join(cleaned)
+    return group_query_terms(ingredients)
 
 
 def normalize_doi(doi: Optional[str]) -> Optional[str]:
@@ -67,6 +57,7 @@ def retrieve_sources(
     collection_name: str,
     cohere_model: str,
     top_k: int,
+    focus: Optional[str] = "Health & Clinical Therapy",
 ) -> list[dict]:
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
@@ -75,6 +66,9 @@ def retrieve_sources(
     query_text = build_query(ingredients)
     if not query_text:
         raise RuntimeError("No valid ingredient terms provided.")
+
+    import cohere
+    import chromadb
 
     client = cohere.Client(api_key)
     embed_response = client.embed(
@@ -89,27 +83,38 @@ def retrieve_sources(
 
     results = collection.query(
         query_embeddings=[embedding],
-        n_results=top_k,
+        n_results=max(top_k * 3, top_k),
         include=["documents", "metadatas", "distances"],
     )
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
     sources: list[dict] = []
-    for doc, metadata in zip(documents, metadatas, strict=False):
-        doi = normalize_doi(metadata.get("doi")) if metadata else None
-        sources.append(
-            {
-                "title": metadata.get("title") if metadata else None,
-                "doi": doi,
-                "year": metadata.get("year") if metadata else None,
-                "citation_count": metadata.get("citation_count") if metadata else None,
-                "abstract": doc,
-                "url": metadata.get("url") if metadata else None,
-            }
+    for doc, metadata, distance in zip(documents, metadatas, distances, strict=False):
+        metadata = metadata or {}
+        doi = normalize_doi(metadata.get("doi"))
+        source = {
+            "title": metadata.get("title"),
+            "doi": doi,
+            "year": metadata.get("year"),
+            "citation_count": metadata.get("citation_count"),
+            "abstract": doc,
+            "url": metadata.get("url"),
+            "distance": distance,
+        }
+        relevance = evaluate_record_relevance(
+            source,
+            ingredients=ingredients,
+            focus=focus,
         )
+        if relevance["relevance_status"] != "accepted":
+            continue
+        source.update(relevance)
+        sources.append(source)
+        if len(sources) >= top_k:
+            break
     return sources
-
 
 def build_prompt(ingredients: Iterable[str], sources: list[dict]) -> str:
     ingredient_text = ", ".join(ingredients)
@@ -153,6 +158,8 @@ def generate_report(
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is required for report generation.")
+
+    from google import genai
 
     client = genai.Client(api_key=api_key)
     def parse_retry_delay(message: str) -> Optional[float]:
@@ -217,6 +224,8 @@ def generate_report_groq(
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is required for Groq report generation.")
+
+    from groq import Groq
 
     client = Groq(api_key=api_key)
     response = client.chat.completions.create(
@@ -297,6 +306,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("ingredients", nargs="*", help="Ingredient terms to search for.")
     parser.add_argument("--top-k", type=int, default=12)
     parser.add_argument(
+        "--focus",
+        default="Health & Clinical Therapy",
+        choices=[
+            "Health & Clinical Therapy",
+            "Agriculture & Botany",
+            "Broad/Generic (No Filter)",
+        ],
+    )
+    parser.add_argument(
         "--chroma-path",
         type=Path,
         default=Path("data") / "chroma",
@@ -349,6 +367,7 @@ def main() -> None:
         collection_name=args.collection,
         cohere_model=args.cohere_model,
         top_k=args.top_k,
+        focus=args.focus,
     )
     if not sources:
         raise RuntimeError("No sources retrieved from Chroma.")

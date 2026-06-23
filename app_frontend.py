@@ -13,6 +13,7 @@ from src.phase3 import (
     generate_report_groq,
     retrieve_sources,
 )
+from src.relevance import triage_records
 
 
 SECRET_KEYS = [
@@ -168,6 +169,12 @@ st.markdown("---")
 
 if "ingested_records" not in st.session_state:
     st.session_state.ingested_records = []
+if "rejected_records" not in st.session_state:
+    st.session_state.rejected_records = []
+if "active_ingredients" not in st.session_state:
+    st.session_state.active_ingredients = []
+if "active_focus" not in st.session_state:
+    st.session_state.active_focus = "Health & Clinical Therapy"
 if "embedding_success" not in st.session_state:
     st.session_state.embedding_success = False
 if "active_collection" not in st.session_state:
@@ -224,18 +231,31 @@ with tab1:
                             per_page=per_page,
                         )
                     )
-                    st.session_state.ingested_records = records_to_dicts(records)
+                    raw_records = records_to_dicts(records)
+                    accepted, rejected = triage_records(
+                        raw_records,
+                        ingredients=ingredients_list,
+                        focus=research_focus,
+                    )
+                    st.session_state.ingested_records = accepted
+                    st.session_state.rejected_records = rejected
+                    st.session_state.active_ingredients = ingredients_list
+                    st.session_state.active_focus = research_focus
                     st.session_state.embedding_success = False
                     st.success(
-                        f"Successfully ingested {len(st.session_state.ingested_records)} source records."
+                        f"Accepted {len(accepted)} relevant records from {len(raw_records)} raw results."
                     )
+                    if rejected:
+                        st.info(
+                            f"Held back {len(rejected)} low-relevance records. Expand the rejected section below to audit why."
+                        )
                 except Exception as exc:
                     st.error(f"Ingestion failed: {exc}")
 
     if st.session_state.ingested_records:
         st.markdown("---")
-        st.subheader("Found Academic Literature Records")
-        st.markdown("Click on any document below to inspect authors, abstracts, and identifiers.")
+        st.subheader("Accepted Academic Literature Records")
+        st.markdown("Click on any accepted document below to inspect authors, abstracts, relevance signals, and identifiers.")
 
         for record in st.session_state.ingested_records:
             title = (record.get("title") or "Untitled Document").strip()
@@ -268,6 +288,13 @@ with tab1:
                         st.markdown(f"**Citation Count:** `{citations}`")
                     if record.get("doi"):
                         st.markdown(f"**DOI:** `{record.get('doi')}`")
+                    if record.get("relevance_score") is not None:
+                        st.markdown(f"**Relevance Score:** `{record.get('relevance_score')}`")
+                    reasons = record.get("relevance_reasons") or []
+                    if reasons:
+                        st.markdown("**Relevance Signals:**")
+                        for reason in reasons[:3]:
+                            st.markdown(f"- {reason}")
 
                     if record.get("url"):
                         st.link_button(
@@ -275,6 +302,25 @@ with tab1:
                             record.get("url"),
                             use_container_width=True,
                         )
+
+    if st.session_state.rejected_records:
+        st.markdown("---")
+        with st.expander(
+            f"Rejected or Low-Relevance Records ({len(st.session_state.rejected_records)})"
+        ):
+            for record in st.session_state.rejected_records:
+                title = (record.get("title") or "Untitled Document").strip()
+                year = record.get("year")
+                label = f"{title} ({year})" if year else title
+                st.markdown(f"**{label}**")
+                st.markdown(f"Relevance score: `{record.get('relevance_score')}`")
+                reject_reasons = record.get("relevance_reject_reasons") or []
+                for reason in reject_reasons[:4]:
+                    st.markdown(f"- {reason}")
+                signals = record.get("relevance_reasons") or []
+                if signals:
+                    st.caption("Signals: " + "; ".join(signals[:3]))
+                st.markdown("---")
 
 with tab2:
     st.header("Guardrail Filtration & Local Vector Upsert")
@@ -309,6 +355,8 @@ with tab2:
                         st.session_state.ingested_records,
                         min_citations=min_citations,
                         recent_year=recent_year,
+                        ingredients=st.session_state.active_ingredients,
+                        focus=st.session_state.active_focus,
                     )
                     chunks = build_chunks(filtered)
                     if not chunks:
@@ -331,7 +379,7 @@ with tab2:
 
                     st.markdown("### Vector Space Matrix Summary")
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("Total Raw Inputs Found", len(st.session_state.ingested_records))
+                    m1.metric("Accepted Ingestion Inputs", len(st.session_state.ingested_records))
                     m2.metric("Passed Guardrail Filters", len(filtered))
                     m3.metric("Chroma DB Status", "Synchronized")
 
@@ -386,6 +434,7 @@ with tab3:
                         collection_name=synth_collection,
                         cohere_model=synth_cohere_model,
                         top_k=top_k,
+                        focus=st.session_state.active_focus,
                     )
                     if not sources:
                         st.error(

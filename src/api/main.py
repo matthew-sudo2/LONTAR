@@ -41,7 +41,8 @@ async def endpoint_ingest(payload: IngestRequest):
             semantic_scholar_pages=payload.semantic_pages,
             pubmed_pages=payload.pubmed_pages,
             core_pages=payload.core_pages,
-            per_page=payload.per_page
+            per_page=payload.per_page,
+            focus=payload.focus
         )
         return results 
     except Exception as e: 
@@ -56,7 +57,9 @@ def endpoint_filter_embed(payload: FilterEmbedRequest):
         filtered = filter_records(
             raw_dicts,
             min_citations=payload.min_citations,
-            recent_year=payload.recent_year
+            recent_year=payload.recent_year,
+            ingredients=payload.ingredients,
+            focus=payload.focus
         )
         
         # Build chunks and push to Chroma
@@ -80,15 +83,16 @@ def endpoint_filter_embed(payload: FilterEmbedRequest):
 @app.post("/api/v1/synthesize", response_model=Report)
 def endpoint_synthesize(payload: SynthesizeRequest): 
     try: 
-        chroma_path = getattr(payload, "chroma_path", Path("data") / "chroma")
+        chroma_path = Path(getattr(payload, "chroma_path", Path("data") / "chroma"))
         collection_name = getattr(payload, "collection", "lontar_ingredient_research_v4")
         cohere_model = getattr(payload, "cohere_model", "embed-v4.0")
         sources = retrieve_sources(
             ingredients=payload.ingredients,
-            chroma_path=Path("data") / "chroma",
-            collection_name="lontar_ingredient_research",
-            cohere_model="embed-multilingual-v3.0",
-            top_k=12
+            chroma_path=chroma_path,
+            collection_name=collection_name,
+            cohere_model=cohere_model,
+            top_k=payload.top_k,
+            focus=payload.focus
         )
         if not sources: 
             raise HTTPException(

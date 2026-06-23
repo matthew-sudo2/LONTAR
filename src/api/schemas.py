@@ -10,11 +10,14 @@ class IngestRequest(BaseModel):
     pubmed_pages: int = 2 
     core_pages: int = 2 
     per_page: int = 2 
+    focus: Optional[str] = "Health & Clinical Therapy"
 
 class FilterEmbedRequest(BaseModel): 
     records: list[StudyRecord]
     min_citations: int = Field(default=0, description="Minimum citation count threshold")
     recent_year: int = Field(default=2018, description="Filter for articles published from this year onwards")
+    ingredients: Optional[List[str]] = None
+    focus: Optional[str] = None
         
     chroma_path: str = Field(default="data/chroma")
     collection: str = Field(default="lontar_ingredient_research_v4")
@@ -33,6 +36,7 @@ class SynthesizeRequest(BaseModel):
     collection: str = "lontar_ingredient_research"
     cohere_model: str = "embed-multilingual-v3.0"
     top_k: int = 15
+    focus: Optional[str] = "Health & Clinical Therapy"
     llm_provider: str = Field(default="gemini", description="Options: gemini, groq")
     gemini_model: str = "gemini-2.0-flash"
     groq_model: str = "llama-3.3-70b-versatile"
