@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -6,15 +7,39 @@ import streamlit as st
 from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
 
+from src.config import (
+    CHROMA_PATH,
+    COHERE_EMBED_MODEL,
+    COHERE_EMBED_MODELS,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_EMBED_FIELD,
+    DEFAULT_FOCUS,
+    DEFAULT_TOP_K,
+    FOCUS_OPTIONS,
+    GROQ_MODELS,
+    INGESTION_PAGE_WARNING_THRESHOLD,
+    LONTAR_COLLECTION,
+    MIN_CITATIONS,
+    RECENT_YEAR,
+    SUMMARY_GROQ_MODELS,
+    DEFAULT_SUMMARY_MODEL,
+)
 from src.ingestion import ingest_ingredients, records_to_dicts
-from src.phase2 import build_chunks, embed_and_upsert, filter_records
+from src.phase2 import (
+    apply_summaries_to_records,
+    build_chunks,
+    embed_and_upsert,
+    filter_records,
+    summarize_for_health_benefits,
+)
 from src.phase3 import (
     build_prompt,
     generate_report_groq,
     retrieve_sources,
 )
-from src.relevance import triage_records
+from src.relevance import triage_records, validate_query_ingredients
 
+logger = logging.getLogger(__name__)
 
 SECRET_KEYS = [
     "GEMINI_API_KEY",
@@ -24,8 +49,6 @@ SECRET_KEYS = [
     "CORE_API_KEY",
     "OPENALEX_EMAIL",
 ]
-
-CHROMA_PATH = Path("data") / "chroma"
 
 
 def hydrate_environment_from_streamlit_secrets() -> None:
@@ -40,6 +63,51 @@ def hydrate_environment_from_streamlit_secrets() -> None:
 
 def clean_ingredients(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def direction_badge(direction: str | None) -> str:
+    return {
+        "benefit": "🟢 Benefit",
+        "risk": "🔴 Risk",
+        "neutral": "⚪ Neutral",
+        "unrelated": "⚫ Unrelated",
+    }.get(direction or "", "")
+
+
+def render_record_body(record: dict) -> None:
+    if record.get("benefit_summary"):
+        badge = direction_badge(record.get("direction"))
+        st.markdown(f"**Health-Benefit Summary** {badge}")
+        st.write(record.get("benefit_summary"))
+        if record.get("mechanism"):
+            st.markdown(f"**Mechanism:** {record.get('mechanism')}")
+        if record.get("population"):
+            st.markdown(f"**Population:** {record.get('population')}")
+        if record.get("confidence"):
+            st.markdown(f"**Confidence:** `{record.get('confidence')}`")
+        with st.expander("Show raw abstract"):
+            st.write(record.get("abstract") or "*No abstract available.*")
+    else:
+        abstract = record.get("abstract")
+        st.markdown("**Abstract:**")
+        st.write(
+            abstract
+            if abstract
+            else "*No abstract summary was provided by the repository engine.*"
+        )
+
+
+def render_session_context() -> None:
+    ingredients = st.session_state.active_ingredients
+    focus = st.session_state.active_focus
+    if ingredients:
+        st.info(
+            f"**Active session:** ingredients = `{', '.join(ingredients)}` · "
+            f"focus = `{focus}` · collection = `{st.session_state.active_collection}` · "
+            f"embed model = `{st.session_state.active_cohere_model}`"
+        )
+    else:
+        st.caption("No ingestion session yet. Complete Tab 1 to set active ingredients and focus.")
 
 
 def render_chatbot_matrix(matrix_list: list[dict]) -> None:
@@ -105,6 +173,42 @@ def render_limitations(limitations_list: list[str]) -> None:
         st.markdown("### Identified Research Gaps & Limitations")
         for idx, item in enumerate(limitations_list):
             st.markdown(f"* **Gap {idx + 1}:** {item}")
+
+
+def render_retrieval_audit(sources: list[dict], rejected: list[dict]) -> None:
+    st.subheader("Retrieval Audit")
+    st.caption(
+        "Sources below passed vector similarity and relevance re-filtering. "
+        "Rejected candidates are shown for transparency."
+    )
+
+    for source in sources:
+        title = (source.get("title") or "Untitled").strip()
+        badge = direction_badge(source.get("direction"))
+        label = f"Accepted: {title} {badge}".strip()
+        with st.expander(label):
+            st.markdown(f"**Relevance score:** `{source.get('relevance_score')}`")
+            if source.get("benefit_summary"):
+                st.markdown(f"**Benefit summary:** {source.get('benefit_summary')}")
+            if source.get("mechanism"):
+                st.markdown(f"**Mechanism:** {source.get('mechanism')}")
+            if source.get("confidence"):
+                st.markdown(f"**Confidence:** `{source.get('confidence')}`")
+            for reason in source.get("relevance_reasons") or []:
+                st.markdown(f"- {reason}")
+
+    if rejected:
+        with st.expander(f"Rejected at retrieval ({len(rejected)})"):
+            for source in rejected[:20]:
+                title = (source.get("title") or "Untitled").strip()
+                st.markdown(f"**{title}**")
+                st.markdown(f"Score: `{source.get('relevance_score')}`")
+                for reason in source.get("relevance_reject_reasons") or []:
+                    st.markdown(f"- {reason}")
+                signals = source.get("relevance_reasons") or []
+                if signals:
+                    st.caption("Signals: " + "; ".join(signals[:3]))
+                st.markdown("---")
 
 
 def render_report(report_data: dict | list | str) -> None:
@@ -174,13 +278,13 @@ if "rejected_records" not in st.session_state:
 if "active_ingredients" not in st.session_state:
     st.session_state.active_ingredients = []
 if "active_focus" not in st.session_state:
-    st.session_state.active_focus = "Health & Clinical Therapy"
+    st.session_state.active_focus = DEFAULT_FOCUS
 if "embedding_success" not in st.session_state:
     st.session_state.embedding_success = False
 if "active_collection" not in st.session_state:
-    st.session_state.active_collection = "lontar_ingredient_research_v4"
+    st.session_state.active_collection = LONTAR_COLLECTION
 if "active_cohere_model" not in st.session_state:
-    st.session_state.active_cohere_model = "embed-v4.0"
+    st.session_state.active_cohere_model = COHERE_EMBED_MODEL
 
 tab1, tab2, tab3 = st.tabs(
     ["1. Ingestion Stage", "2. Filter & Embed", "3. Synthesize Report"]
@@ -191,19 +295,30 @@ with tab1:
 
     col1, col2 = st.columns(2)
     with col1:
+        default_ingredients = (
+            ", ".join(st.session_state.active_ingredients)
+            if st.session_state.active_ingredients
+            else "Curcuma longa, Piper nigrum"
+        )
         ingredients_input = st.text_input(
             "Target Research Ingredients (comma separated)",
-            "Curcuma longa, Piper nigrum",
+            default_ingredients,
+        )
+        focus_index = (
+            list(FOCUS_OPTIONS).index(st.session_state.active_focus)
+            if st.session_state.active_focus in FOCUS_OPTIONS
+            else 0
         )
         research_focus = st.selectbox(
             "Research Focus",
-            [
-                "Health & Clinical Therapy",
-                "Agriculture & Botany",
-                "Broad/Generic (No Filter)",
-            ],
-            index=0,
+            list(FOCUS_OPTIONS),
+            index=focus_index,
         )
+        if research_focus == "Broad/Generic (No Filter)":
+            st.caption(
+                "Broad/Generic applies no focus-profile keyword filter. "
+                "Only ingredient-term matching and citation/year guardrails remain."
+            )
         per_page = st.number_input("Records per engine page", min_value=1, max_value=50, value=10)
 
     with col2:
@@ -211,6 +326,14 @@ with tab1:
         semantic = st.slider("Semantic Scholar Pages", 0, 5, 1)
         pubmed = st.slider("PubMed Pages", 0, 5, 1)
         core = st.slider("Core Pages", 0, 5, 0)
+
+    total_page_fetches = openalex + semantic + pubmed + core
+    if total_page_fetches > INGESTION_PAGE_WARNING_THRESHOLD:
+        st.warning(
+            f"High API load: {total_page_fetches} page fetches per source engine "
+            f"(threshold {INGESTION_PAGE_WARNING_THRESHOLD}). "
+            "This can hit rate limits and increase latency."
+        )
 
     if st.button("Run Ingestion Pipeline", type="primary"):
         ingredients_list = clean_ingredients(ingredients_input)
@@ -250,6 +373,7 @@ with tab1:
                             f"Held back {len(rejected)} low-relevance records. Expand the rejected section below to audit why."
                         )
                 except Exception as exc:
+                    logger.exception("Ingestion failed")
                     st.error(f"Ingestion failed: {exc}")
 
     if st.session_state.ingested_records:
@@ -273,14 +397,7 @@ with tab1:
                     authors = record.get("authors", [])
                     authors_str = ", ".join(authors) if authors else "Unknown Authors"
                     st.markdown(f"**Authors:** *{authors_str}*")
-
-                    abstract = record.get("abstract")
-                    st.markdown("**Abstract:**")
-                    st.write(
-                        abstract
-                        if abstract
-                        else "*No abstract summary was provided by the repository engine.*"
-                    )
+                    render_record_body(record)
 
                 with c2:
                     st.markdown(f"**Data Source:** `{source}`")
@@ -324,29 +441,66 @@ with tab1:
 
 with tab2:
     st.header("Guardrail Filtration & Local Vector Upsert")
+    render_session_context()
 
     if not st.session_state.ingested_records:
         st.warning("Please complete the Ingestion Stage first to collect raw records.")
     else:
         col1, col2 = st.columns(2)
         with col1:
-            min_citations = st.number_input("Minimum Citation Guardrail", min_value=0, value=0)
+            min_citations = st.number_input(
+                "Minimum Citation Guardrail",
+                min_value=0,
+                value=MIN_CITATIONS,
+                help="Record passes if it meets this citation count OR the recent-year threshold.",
+            )
             recent_year = st.number_input(
                 "Minimum Publication Year Guardrail",
                 min_value=1900,
                 max_value=2026,
-                value=2018,
+                value=RECENT_YEAR,
+                help="Record passes if published in this year or later OR meets citation threshold.",
             )
         with col2:
+            model_index = (
+                list(COHERE_EMBED_MODELS).index(st.session_state.active_cohere_model)
+                if st.session_state.active_cohere_model in COHERE_EMBED_MODELS
+                else 0
+            )
             cohere_model = st.selectbox(
                 "Cohere Vector Model",
-                ["embed-v4.0", "embed-multilingual-v3.0"],
-                index=0,
+                list(COHERE_EMBED_MODELS),
+                index=model_index,
             )
             collection_name = st.text_input(
                 "Chroma Vector Target Collection",
                 st.session_state.active_collection,
             )
+
+        st.markdown("#### AI Health-Benefit Summarization")
+        summarize_enabled = st.checkbox(
+            "Summarize each source with an emphasis on health benefits (recommended)",
+            value=True,
+            help="Runs each accepted abstract through Groq to extract a health-benefit-focused "
+            "summary, effect direction, mechanism, and confidence. The summary is embedded "
+            "instead of the raw abstract, improving retrieval for health-benefit queries.",
+        )
+        drop_risk = False
+        summary_model = DEFAULT_SUMMARY_MODEL
+        if summarize_enabled:
+            c1, c2 = st.columns(2)
+            with c1:
+                summary_model = st.selectbox(
+                    "Summarization Model",
+                    list(SUMMARY_GROQ_MODELS),
+                    index=0,
+                )
+            with c2:
+                drop_risk = st.checkbox(
+                    "Exclude risk/unrelated findings from the vector store",
+                    value=False,
+                    help="Keeps risk-direction sources out of the health-claim matrix entirely.",
+                )
 
         if st.button("Process & Generate Embeddings", type="primary"):
             with st.spinner("Executing filtering criteria and updating vector embeddings via Cohere..."):
@@ -358,17 +512,39 @@ with tab2:
                         ingredients=st.session_state.active_ingredients,
                         focus=st.session_state.active_focus,
                     )
-                    chunks = build_chunks(filtered)
+
+                    set_aside: list[dict] = []
+                    if summarize_enabled:
+                        with st.spinner("Summarizing sources for health-benefit emphasis..."):
+                            filtered, set_aside = summarize_for_health_benefits(
+                                filtered,
+                                ingredients=st.session_state.active_ingredients,
+                                summary_model=summary_model,
+                                drop_risk_and_unrelated=drop_risk,
+                            )
+                        st.session_state.ingested_records = apply_summaries_to_records(
+                            st.session_state.ingested_records,
+                            filtered,
+                        )
+
+                    embed_field = DEFAULT_EMBED_FIELD if summarize_enabled else "abstract"
+                    chunks = build_chunks(filtered, embed_field=embed_field)
                     if not chunks:
                         st.error("No records passed the current filters with usable abstracts.")
                         st.stop()
+
+                    if set_aside:
+                        st.info(
+                            f"Summarizer set aside {len(set_aside)} risk/unrelated "
+                            "records from the vector store."
+                        )
 
                     embed_and_upsert(
                         chunks=chunks,
                         chroma_path=CHROMA_PATH,
                         collection_name=collection_name,
                         cohere_model=cohere_model,
-                        batch_size=64,
+                        batch_size=DEFAULT_BATCH_SIZE,
                     )
                     st.session_state.embedding_success = True
                     st.session_state.active_collection = collection_name
@@ -388,12 +564,28 @@ with tab2:
                         "the local vector collection store."
                     )
                 except Exception as exc:
+                    logger.exception("Embedding failed")
                     st.error(f"Embedding failed: {exc}")
 
 with tab3:
     st.header("Multi-Source Research Report Synthesis")
+    render_session_context()
 
-    synth_ingredients = st.text_input("Query Ingredients for Knowledge Retrieval", "Curcuma longa")
+    if not st.session_state.embedding_success:
+        st.warning(
+            "No embeddings found for this session. Complete Tab 2 before synthesizing a report."
+        )
+
+    embedded_default = (
+        ", ".join(st.session_state.active_ingredients)
+        if st.session_state.active_ingredients
+        else "Curcuma longa"
+    )
+    synth_ingredients = st.text_input(
+        "Query Ingredients for Knowledge Retrieval",
+        embedded_default,
+        help="Must match ingredients embedded in Tab 2 (aliases like turmeric/curcuma longa are accepted).",
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -402,33 +594,55 @@ with tab3:
             [st.session_state.active_collection],
             index=0,
         )
+        model_index = (
+            list(COHERE_EMBED_MODELS).index(st.session_state.active_cohere_model)
+            if st.session_state.active_cohere_model in COHERE_EMBED_MODELS
+            else 0
+        )
         synth_cohere_model = st.selectbox(
             "Retrieval Cohere Model",
-            ["embed-v4.0", "embed-multilingual-v3.0"],
-            index=0 if st.session_state.active_cohere_model == "embed-v4.0" else 1,
+            list(COHERE_EMBED_MODELS),
+            index=model_index,
         )
+        if synth_cohere_model != st.session_state.active_cohere_model:
+            st.error(
+                f"Embedding model mismatch: Tab 2 used `{st.session_state.active_cohere_model}` "
+                f"but retrieval is set to `{synth_cohere_model}`. Use the same model for both."
+            )
     with col2:
         groq_model = st.selectbox(
             "Groq Model",
-            [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "mixtral-8x7b-32768",
-                "gemma2-9b-it",
-            ],
+            list(GROQ_MODELS),
             index=0,
         )
-        top_k = st.slider("Source Documents to Retrieve", 1, 25, 12)
+        st.caption("Groq model IDs change over time; update GROQ_MODELS in src/config.py as needed.")
+        top_k = st.slider("Source Documents to Retrieve", 1, 25, DEFAULT_TOP_K)
 
     if st.button("Generate Comprehensive Report", type="primary"):
         ingredients_list = clean_ingredients(synth_ingredients)
 
         if not ingredients_list:
             st.error("Please enter at least one ingredient.")
+        elif not st.session_state.embedding_success:
+            st.error("Complete Tab 2 (Filter & Embed) before generating a report.")
+        elif synth_cohere_model != st.session_state.active_cohere_model:
+            st.error("Fix the Cohere model mismatch before generating a report.")
         else:
+            embedded = st.session_state.active_ingredients
+            if embedded:
+                matched, unmatched = validate_query_ingredients(ingredients_list, embedded)
+                if unmatched:
+                    st.error(
+                        "Query ingredients not found in the embedded session set: "
+                        f"`{', '.join(unmatched)}`. "
+                        f"Embedded ingredients were: `{', '.join(embedded)}`. "
+                        "Re-run Tab 1/2 with matching ingredients or adjust your query."
+                    )
+                    st.stop()
+
             with st.spinner("Querying vector space and synthesizing report..."):
                 try:
-                    sources = retrieve_sources(
+                    retrieval = retrieve_sources(
                         ingredients=ingredients_list,
                         chroma_path=CHROMA_PATH,
                         collection_name=synth_collection,
@@ -436,14 +650,19 @@ with tab3:
                         top_k=top_k,
                         focus=st.session_state.active_focus,
                     )
-                    if not sources:
+                    if not retrieval.sources:
                         st.error(
                             "No source reference literature found in the vector collection "
-                            "for this query."
+                            "for this query. Check that Tab 2 used the same collection and "
+                            f"embed model (`{st.session_state.active_cohere_model}`)."
                         )
+                        if retrieval.rejected:
+                            render_retrieval_audit([], retrieval.rejected)
                         st.stop()
 
-                    prompt = build_prompt(ingredients_list, sources)
+                    render_retrieval_audit(retrieval.sources, retrieval.rejected)
+
+                    prompt = build_prompt(ingredients_list, retrieval.sources)
                     report = generate_report_groq(prompt, model_name=groq_model)
 
                     st.success("Report successfully generated.")
@@ -451,4 +670,5 @@ with tab3:
                     st.header("AI Comprehensive Research Report")
                     render_report(report.model_dump())
                 except Exception as exc:
+                    logger.exception("Synthesis failed")
                     st.error(f"Synthesis failed: {exc}")

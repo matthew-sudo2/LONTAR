@@ -139,6 +139,23 @@ def clean_ingredient_terms(ingredients: Iterable[str]) -> list[str]:
     return cleaned
 
 
+def validate_query_ingredients(
+    query_ingredients: Iterable[str],
+    embedded_ingredients: Iterable[str],
+) -> tuple[list[str], list[str]]:
+    """Return (matched, unmatched) query labels against an embedded ingredient set."""
+    embedded_terms = {term.lower() for term in expand_ingredient_terms(embedded_ingredients)}
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for ingredient in clean_ingredient_terms(query_ingredients):
+        query_terms = {term.lower() for term in expand_ingredient_terms([ingredient])}
+        if query_terms & embedded_terms:
+            matched.append(ingredient)
+        else:
+            unmatched.append(ingredient)
+    return matched, unmatched
+
+
 def expand_ingredient_terms(ingredients: Iterable[str]) -> list[str]:
     expanded: list[str] = []
     seen: set[str] = set()

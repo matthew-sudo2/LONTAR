@@ -7,9 +7,21 @@ import os
 from pathlib import Path
 from typing import Iterable, Optional
 
-from src.relevance import evaluate_record_relevance
-
 from dotenv import load_dotenv
+
+from src.config import (
+    CHROMA_PATH,
+    COHERE_EMBED_MODEL,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_EMBED_FIELD,
+    DEFAULT_SUMMARY_MODEL,
+    FOCUS_OPTIONS,
+    LONTAR_COLLECTION,
+    MIN_CITATIONS,
+    RECENT_YEAR,
+)
+from src.relevance import evaluate_record_relevance
+from src.summarize import summarize_records
 
 
 def load_records(path: Path) -> list[dict]:
@@ -89,12 +101,29 @@ def filter_records(
     return filtered
 
 
-def build_chunks(records: Iterable[dict]) -> list[dict]:
+def build_chunks(records: Iterable[dict], *, embed_field: str = DEFAULT_EMBED_FIELD) -> list[dict]:
+    """Build embeddable chunks.
+
+    embed_field controls what text gets embedded:
+    - "auto" (default): use benefit_summary if present, else raw abstract
+    - "abstract": always embed the raw abstract
+    - "benefit_summary": always embed benefit_summary (skips records without one)
+    """
     chunks: list[dict] = []
     for record in records:
-        text = record.get("abstract") or ""
+        abstract = record.get("abstract") or ""
+        benefit_summary = record.get("benefit_summary") or ""
+
+        if embed_field == "abstract":
+            text = abstract
+        elif embed_field == "benefit_summary":
+            text = benefit_summary
+        else:
+            text = benefit_summary or abstract
+
         if not text:
             continue
+
         doi = normalize_doi(record.get("doi"))
         source_id = record_key(record) or ""
         raw_id = f"{record.get('source','')}|{doi or source_id}|{record.get('title','')}"
@@ -109,12 +138,72 @@ def build_chunks(records: Iterable[dict]) -> list[dict]:
             ("citation_count", record.get("citation_count")),
             ("url", record.get("url")),
             ("relevance_score", record.get("relevance_score")),
+            ("abstract", abstract or None),
+            ("benefit_summary", benefit_summary or None),
+            ("direction", record.get("direction")),
+            ("mechanism", record.get("mechanism")),
+            ("population", record.get("population")),
+            ("confidence", record.get("confidence")),
         ]
         for key, value in raw_metadata_fields:
-            if value is not None: 
+            if value is not None:
                 metadata[key] = value
         chunks.append({"id": chunk_id, "text": text, "metadata": metadata})
     return chunks
+
+
+def summarize_for_health_benefits(
+    records: list[dict],
+    *,
+    ingredients: Optional[Iterable[str]],
+    summary_model: str,
+    drop_risk_and_unrelated: bool,
+) -> tuple[list[dict], list[dict]]:
+    """Run AI benefit summarization over guardrail-accepted records."""
+    if not ingredients:
+        return records, []
+
+    drop_directions = {"risk", "unrelated"} if drop_risk_and_unrelated else set()
+    return summarize_records(
+        records,
+        ingredients=ingredients,
+        model_name=summary_model,
+        drop_directions=drop_directions,
+    )
+
+
+SUMMARY_FIELDS = (
+    "benefit_summary",
+    "direction",
+    "mechanism",
+    "population",
+    "confidence",
+    "summarized_ingredient",
+)
+
+
+def apply_summaries_to_records(
+    ingested: list[dict],
+    summarized: list[dict],
+) -> list[dict]:
+    """Merge benefit-summary fields from Tab 2 back into the ingested record list."""
+    summary_by_key: dict[str, dict] = {}
+    for record in summarized:
+        key = record_key(record)
+        if key:
+            summary_by_key[key] = record
+
+    updated: list[dict] = []
+    for record in ingested:
+        merged = dict(record)
+        key = record_key(record)
+        if key and key in summary_by_key:
+            source = summary_by_key[key]
+            for field in SUMMARY_FIELDS:
+                if source.get(field) is not None:
+                    merged[field] = source[field]
+        updated.append(merged)
+    return updated
 
 def batch_iter(items: list[dict], batch_size: int) -> Iterable[list[dict]]:
     for start in range(0, len(items), batch_size):
@@ -159,32 +248,49 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase 2: filter and embed ingestion data.")
     parser.add_argument("--input", type=Path, default=Path("data") / "ingestion.json")
     parser.add_argument("--filtered-out", type=Path, default=Path("data") / "filtered.json")
-    parser.add_argument("--min-citations", type=int, default=5)
-    parser.add_argument("--recent-year", type=int, default=2024)
+    parser.add_argument("--min-citations", type=int, default=MIN_CITATIONS)
+    parser.add_argument("--recent-year", type=int, default=RECENT_YEAR)
     parser.add_argument(
         "--chroma-path",
         type=Path,
-        default=Path("data") / "chroma",
+        default=CHROMA_PATH,
         help="Local Chroma persistence path.",
     )
     parser.add_argument(
         "--collection",
-        default="lontar_ingredient_research",
+        default=LONTAR_COLLECTION,
     )
     parser.add_argument(
         "--cohere-model",
-        default="embed-multilingual-v3.0",
+        default=COHERE_EMBED_MODEL,
     )
-    parser.add_argument("--batch-size", type=int, default=48)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--ingredients", nargs="*", default=None)
     parser.add_argument(
         "--focus",
         default=None,
-        choices=[
-            "Health & Clinical Therapy",
-            "Agriculture & Botany",
-            "Broad/Generic (No Filter)",
-        ],
+        choices=list(FOCUS_OPTIONS),
+    )
+    parser.add_argument(
+        "--summarize",
+        action="store_true",
+        help="Run AI health-benefit summarization before embedding.",
+    )
+    parser.add_argument(
+        "--summary-model",
+        default=DEFAULT_SUMMARY_MODEL,
+        help="Groq model used for benefit summarization.",
+    )
+    parser.add_argument(
+        "--drop-risk-and-unrelated",
+        action="store_true",
+        help="Discard records classified as risk/unrelated by the summarizer.",
+    )
+    parser.add_argument(
+        "--embed-field",
+        default=DEFAULT_EMBED_FIELD,
+        choices=["auto", "abstract", "benefit_summary"],
+        help="Which text to embed (default: benefit_summary if available, else abstract).",
     )
     return parser.parse_args()
 
@@ -201,10 +307,21 @@ def main() -> None:
         ingredients=args.ingredients,
         focus=args.focus,
     )
+    if args.summarize:
+        filtered, skipped = summarize_for_health_benefits(
+            filtered,
+            ingredients=args.ingredients,
+            summary_model=args.summary_model,
+            drop_risk_and_unrelated=args.drop_risk_and_unrelated,
+        )
+        if skipped:
+            print(f"Summarizer set aside {len(skipped)} risk/unrelated records.")
+
     args.filtered_out.parent.mkdir(parents=True, exist_ok=True)
     args.filtered_out.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
 
-    chunks = build_chunks(filtered)
+    embed_field = args.embed_field if args.summarize else "abstract"
+    chunks = build_chunks(filtered, embed_field=embed_field)
     embed_and_upsert(
         chunks,
         collection_name=args.collection,

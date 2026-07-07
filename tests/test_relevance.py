@@ -1,8 +1,9 @@
 import unittest
 
 from src.ingestion import build_query
-from src.phase2 import filter_records
-from src.relevance import evaluate_record_relevance, triage_records
+from src.phase2 import build_chunks, filter_records
+from src.relevance import evaluate_record_relevance, triage_records, validate_query_ingredients
+from src.summarize import primary_ingredient_for_record
 
 
 class RelevanceGuardrailTests(unittest.TestCase):
@@ -100,6 +101,46 @@ class RelevanceGuardrailTests(unittest.TestCase):
         self.assertEqual(len(accepted), 1)
         self.assertEqual(len(rejected), 1)
         self.assertTrue(rejected[0]["relevance_reject_reasons"])
+
+    def test_validate_query_ingredients_accepts_aliases(self):
+        matched, unmatched = validate_query_ingredients(
+            ["turmeric"],
+            ["Curcuma longa", "Piper nigrum"],
+        )
+        self.assertEqual(matched, ["turmeric"])
+        self.assertEqual(unmatched, [])
+
+    def test_validate_query_ingredients_rejects_unknown(self):
+        matched, unmatched = validate_query_ingredients(
+            ["Curcuma longa", "Ashwagandha"],
+            ["Curcuma longa", "Piper nigrum"],
+        )
+        self.assertEqual(matched, ["Curcuma longa"])
+        self.assertEqual(unmatched, ["Ashwagandha"])
+
+    def test_primary_ingredient_for_record_picks_alias_match(self):
+        record = {
+            "title": "Curcumin and inflammation",
+            "abstract": "Turmeric extract reduced inflammatory markers in humans.",
+        }
+        chosen = primary_ingredient_for_record(
+            record,
+            ["Piper nigrum", "Curcuma longa"],
+        )
+        self.assertEqual(chosen, "Curcuma longa")
+
+    def test_build_chunks_prefers_benefit_summary_in_auto_mode(self):
+        record = {
+            "source": "openalex",
+            "title": "Turmeric study",
+            "abstract": "Long raw abstract text.",
+            "benefit_summary": "Turmeric reduced inflammation in a human trial.",
+            "direction": "benefit",
+        }
+        chunks = build_chunks([record], embed_field="auto")
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["text"], record["benefit_summary"])
+        self.assertEqual(chunks[0]["metadata"]["abstract"], record["abstract"])
 
 
 if __name__ == "__main__":

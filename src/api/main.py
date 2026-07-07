@@ -1,12 +1,21 @@
-import os 
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from src.api.schemas import IngestRequest, FilterEmbedRequest, FilterEmbedResponse, SynthesizeRequest
-from src.ingestion import ingest_ingredients, StudyRecord
-from src.phase2 import filter_records, build_chunks, embed_and_upsert
-from src.phase3 import retrieve_sources, build_prompt, generate_report, generate_report_groq, Report
+from src.api.schemas import IngestRequest, FilterEmbedRequest, FilterEmbedResponse, SynthesizeRequestfrom src.ingestion import ingest_ingredients, StudyRecord
+from src.phase2 import (
+    filter_records,
+    build_chunks,
+    embed_and_upsert,
+    summarize_for_health_benefits,
+)
+from src.phase3 import (
+    retrieve_sources,
+    build_prompt,
+    generate_report,
+    generate_report_groq,
+    Report,
+)
 
 load_dotenv()
 
@@ -61,9 +70,17 @@ def endpoint_filter_embed(payload: FilterEmbedRequest):
             ingredients=payload.ingredients,
             focus=payload.focus
         )
-        
-        # Build chunks and push to Chroma
-        chunks = build_chunks(filtered)
+
+        if payload.summarize:
+            filtered, _skipped = summarize_for_health_benefits(
+                filtered,
+                ingredients=payload.ingredients,
+                summary_model=payload.summary_model,
+                drop_risk_and_unrelated=payload.drop_risk_and_unrelated,
+            )
+
+        embed_field = payload.embed_field if payload.summarize else "abstract"
+        chunks = build_chunks(filtered, embed_field=embed_field)
         embed_and_upsert(
             chunks=chunks,
             chroma_path=payload.chroma_path,
@@ -81,30 +98,35 @@ def endpoint_filter_embed(payload: FilterEmbedRequest):
         raise HTTPException(status_code=500, detail=f"Filtering/Embedding phase failure: {str(e)}")
     
 @app.post("/api/v1/synthesize", response_model=Report)
-def endpoint_synthesize(payload: SynthesizeRequest): 
-    try: 
-        chroma_path = Path(getattr(payload, "chroma_path", Path("data") / "chroma"))
-        collection_name = getattr(payload, "collection", "lontar_ingredient_research_v4")
-        cohere_model = getattr(payload, "cohere_model", "embed-v4.0")
-        sources = retrieve_sources(
+def endpoint_synthesize(payload: SynthesizeRequest):
+    try:
+        retrieval = retrieve_sources(
             ingredients=payload.ingredients,
-            chroma_path=chroma_path,
-            collection_name=collection_name,
-            cohere_model=cohere_model,
+            chroma_path=Path(payload.chroma_path),
+            collection_name=payload.collection,
+            cohere_model=payload.cohere_model,
             top_k=payload.top_k,
-            focus=payload.focus
+            focus=payload.focus,
         )
-        if not sources: 
+        if not retrieval.sources:
             raise HTTPException(
-                status_code=404, 
-                detail="No source reference literature found in database matching query items."
+                status_code=404,
+                detail="No source reference literature found in database matching query items.",
             )
-        
-        prompt = build_prompt(payload.ingredients, sources)
-        report = generate_report_groq(
-            prompt=prompt,
-            model_name="llama-3.3-70b-versatile"
-        )
+
+        prompt = build_prompt(payload.ingredients, retrieval.sources)
+        if payload.llm_provider == "groq":
+            report = generate_report_groq(
+                prompt=prompt,
+                model_name=payload.groq_model,
+            )
+        else:
+            report = generate_report(
+                prompt,
+                model_name=payload.gemini_model,
+                max_retries=payload.gemini_retries,
+                backoff_seconds=float(payload.gemini_backoff),
+            )
         return report
     except HTTPException as http_exc: 
         raise http_exc

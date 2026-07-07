@@ -3,12 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
+from src.config import (
+    CHROMA_PATH,
+    COHERE_EMBED_MODEL,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_FOCUS,
+    DEFAULT_GEMINI_BACKOFF,
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_GEMINI_RETRIES,
+    DEFAULT_GROQ_MODEL,
+    DEFAULT_INGREDIENTS,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_TOP_K,
+    FOCUS_OPTIONS,
+    LONTAR_COLLECTION,
+)
 from src.relevance import evaluate_record_relevance, group_query_terms
 
 
@@ -38,6 +54,12 @@ class Report(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
+@dataclass
+class RetrievalResult:
+    sources: list[dict] = field(default_factory=list)
+    rejected: list[dict] = field(default_factory=list)
+
+
 def build_query(ingredients: Iterable[str]) -> str:
     return group_query_terms(ingredients)
 
@@ -57,8 +79,8 @@ def retrieve_sources(
     collection_name: str,
     cohere_model: str,
     top_k: int,
-    focus: Optional[str] = "Health & Clinical Therapy",
-) -> list[dict]:
+    focus: Optional[str] = DEFAULT_FOCUS,
+) -> RetrievalResult:
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
         raise RuntimeError("COHERE_API_KEY is required for retrieval embeddings.")
@@ -91,6 +113,7 @@ def retrieve_sources(
     distances = results.get("distances", [[]])[0]
 
     sources: list[dict] = []
+    rejected: list[dict] = []
     for doc, metadata, distance in zip(documents, metadatas, distances, strict=False):
         metadata = metadata or {}
         doi = normalize_doi(metadata.get("doi"))
@@ -99,7 +122,12 @@ def retrieve_sources(
             "doi": doi,
             "year": metadata.get("year"),
             "citation_count": metadata.get("citation_count"),
-            "abstract": doc,
+            "abstract": metadata.get("abstract") or doc,
+            "benefit_summary": metadata.get("benefit_summary"),
+            "direction": metadata.get("direction"),
+            "mechanism": metadata.get("mechanism"),
+            "population": metadata.get("population"),
+            "confidence": metadata.get("confidence"),
             "url": metadata.get("url"),
             "distance": distance,
         }
@@ -109,17 +137,21 @@ def retrieve_sources(
             focus=focus,
         )
         if relevance["relevance_status"] != "accepted":
+            rejected.append({**source, **relevance})
             continue
         source.update(relevance)
         sources.append(source)
         if len(sources) >= top_k:
             break
-    return sources
+    return RetrievalResult(sources=sources, rejected=rejected)
 
 def build_prompt(ingredients: Iterable[str], sources: list[dict]) -> str:
     ingredient_text = ", ".join(ingredients)
     source_blocks: list[str] = []
     for idx, source in enumerate(sources, start=1):
+        benefit_summary = source.get("benefit_summary")
+        body_label = "Health-Benefit Summary" if benefit_summary else "Abstract"
+        body_text = benefit_summary or source.get("abstract") or ""
         block = [
             f"[SOURCE DOCUMENT {idx}]",
             f"Title: {source.get('title') or ''}",
@@ -127,18 +159,28 @@ def build_prompt(ingredients: Iterable[str], sources: list[dict]) -> str:
             f"Year: {source.get('year') or ''}",
             f"Citation Count: {source.get('citation_count') or ''}",
             f"URL: {source.get('url') or ''}",
-            "Abstract:",
-            source.get("abstract") or "",
         ]
+        if source.get("direction"):
+            block.append(f"Direction: {source.get('direction')}")
+        if source.get("mechanism"):
+            block.append(f"Mechanism: {source.get('mechanism')}")
+        if source.get("confidence"):
+            block.append(f"Confidence: {source.get('confidence')}")
+        block.append(f"{body_label}:")
+        block.append(body_text)
         source_blocks.append("\n".join(block))
 
     schema = Report.model_json_schema()
     joined_sources_text = "\n\n".join(source_blocks)
     return (
-        "You are a scientific report generator. "
+        "You are a scientific report generator. Emphasize the specific health "
+        "benefits of each ingredient — mechanisms, effect direction, and evidence "
+        "strength — over general background. "
         "Return JSON only. Do not include markdown or explanations.\n\n"
         f"Ingredients: {ingredient_text}\n\n"
         "Use ONLY the source documents provided below. "
+        "Prefer sources marked Direction: benefit for the health claim matrix; "
+        "only use Direction: risk sources for the safety/dosage dossier. "
         "If a claim is not supported, omit it. "
         "DOI values must be plain DOI strings without URLs.\n\n"
         "JSON schema:\n"
@@ -304,44 +346,40 @@ def render_markdown(report: Report) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase 3: generate the final report.")
     parser.add_argument("ingredients", nargs="*", help="Ingredient terms to search for.")
-    parser.add_argument("--top-k", type=int, default=12)
+    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     parser.add_argument(
         "--focus",
-        default="Health & Clinical Therapy",
-        choices=[
-            "Health & Clinical Therapy",
-            "Agriculture & Botany",
-            "Broad/Generic (No Filter)",
-        ],
+        default=DEFAULT_FOCUS,
+        choices=list(FOCUS_OPTIONS),
     )
     parser.add_argument(
         "--chroma-path",
         type=Path,
-        default=Path("data") / "chroma",
+        default=CHROMA_PATH,
         help="Local Chroma persistence path.",
     )
     parser.add_argument(
         "--collection",
-        default="lontar_ingredient_research",
+        default=LONTAR_COLLECTION,
     )
     parser.add_argument(
         "--cohere-model",
-        default="embed-multilingual-v3.0",
+        default=COHERE_EMBED_MODEL,
     )
     parser.add_argument(
         "--gemini-model",
-        default="gemini-2.0-flash",
+        default=DEFAULT_GEMINI_MODEL,
     )
-    parser.add_argument("--gemini-retries", type=int, default=2)
-    parser.add_argument("--gemini-backoff", type=float, default=2.5)
+    parser.add_argument("--gemini-retries", type=int, default=DEFAULT_GEMINI_RETRIES)
+    parser.add_argument("--gemini-backoff", type=float, default=DEFAULT_GEMINI_BACKOFF)
     parser.add_argument(
         "--llm-provider",
         choices=["gemini", "groq"],
-        default="gemini",
+        default=DEFAULT_LLM_PROVIDER,
     )
     parser.add_argument(
         "--groq-model",
-        default="llama-3.3-70b-versatile",
+        default=DEFAULT_GROQ_MODEL,
     )
     parser.add_argument(
         "--out-json",
@@ -359,9 +397,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     load_dotenv()
     args = parse_args()
-    ingredients = args.ingredients or ["Macadamia", "Turmeric", "Pepperberry"]
+    ingredients = args.ingredients or list(DEFAULT_INGREDIENTS)
 
-    sources = retrieve_sources(
+    retrieval = retrieve_sources(
         ingredients,
         chroma_path=args.chroma_path,
         collection_name=args.collection,
@@ -369,10 +407,10 @@ def main() -> None:
         top_k=args.top_k,
         focus=args.focus,
     )
-    if not sources:
+    if not retrieval.sources:
         raise RuntimeError("No sources retrieved from Chroma.")
 
-    prompt = build_prompt(ingredients, sources)
+    prompt = build_prompt(ingredients, retrieval.sources)
     if args.llm_provider == "groq":
         report = generate_report_groq(
             prompt,
