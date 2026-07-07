@@ -138,5 +138,15 @@ streamlit run app_frontend.py
 uvicorn src.api.main:app --reload
 ```
 
+## One-Command Pipeline (Phase 1-3)
+Run everything end-to-end with the default ingredient list:
+```powershell
+python -m src.pipeline
+```
+Or pass your own ingredients:
+```powershell
+python -m src.pipeline "macadamia nuts" "hemp seeds" "nutritional yeast" "yellow mustard powder" "Himalayan salt" "turmeric" "ginger" "cinnamon" "pepperberry"
+```
+
 ## Relevance Filter Notes
 The keyword filter in `relevance.py` is a fast pre-filter tuned for obvious noise (e.g., wastewater/materials papers). When `--summarize` is enabled, `summarize.py` adds a second LLM pass that classifies effect direction per record. "Broad/Generic (No Filter)" applies no focus-profile scoring.

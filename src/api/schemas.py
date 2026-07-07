@@ -77,4 +77,4 @@ class SynthesizeRequest(BaseModel):
     gemini_model: str = DEFAULT_GEMINI_MODEL
     groq_model: str = DEFAULT_GROQ_MODEL
     gemini_retries: int = DEFAULT_GEMINI_RETRIES
-    gemini_backoff: int = int(DEFAULT_GEMINI_BACKOFF)
+    gemini_backoff: float = DEFAULT_GEMINI_BACKOFF

@@ -125,7 +125,7 @@ def endpoint_synthesize(payload: SynthesizeRequest):
                 prompt,
                 model_name=payload.gemini_model,
                 max_retries=payload.gemini_retries,
-                backoff_seconds=float(payload.gemini_backoff),
+                backoff_seconds=payload.gemini_backoff,
             )
         return report
     except HTTPException as http_exc: 

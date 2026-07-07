@@ -230,18 +230,34 @@ def embed_and_upsert(
     chroma_client = chromadb.PersistentClient(path=str(chroma_path))
     collection = chroma_client.get_or_create_collection(name=collection_name)
 
+    import time
     for batch in batch_iter(chunks, batch_size):
         texts = [item["text"] for item in batch]
         ids = [item["id"] for item in batch]
         metadatas = [item["metadata"] for item in batch]
 
-        response = client.embed(
-            texts=texts,
-            model=cohere_model,
-            input_type="search_document",
-        )
-        embeddings = response.embeddings
+        max_retries = 5
+        backoff = 10.0
+        embeddings = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.embed(
+                    texts=texts,
+                    model=cohere_model,
+                    input_type="search_document",
+                )
+                embeddings = response.embeddings
+                break
+            except Exception as exc:
+                if attempt < max_retries:
+                    delay = backoff * (2 ** attempt)
+                    print(f"Cohere embedding error encountered: {exc}. Retrying batch in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                raise
+
         collection.upsert(ids=ids, documents=texts, metadatas=metadatas, embeddings=embeddings)
+        time.sleep(2.0)  # Brief spacing delay between batches to respect trial limits
 
 
 def parse_args() -> argparse.Namespace:

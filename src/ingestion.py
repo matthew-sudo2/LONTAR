@@ -103,6 +103,8 @@ def map_openalex_record(record: dict) -> StudyRecord:
         for item in authorships
         if item.get("author", {}).get("display_name")
     ]
+    raw_ids = record.get("ids") or {}
+    external_ids = {k: str(v) for k, v in raw_ids.items() if v is not None}
     return StudyRecord(
         source="openalex",
         title=record.get("title") or "",
@@ -113,12 +115,13 @@ def map_openalex_record(record: dict) -> StudyRecord:
         authors=authors,
         url=(record.get("primary_location", {}) or {}).get("landing_page_url")
         or record.get("id"),
-        external_ids=record.get("ids") or {},
+        external_ids=external_ids,
     )
 
 
 def map_semantic_scholar_record(record: dict) -> StudyRecord:
-    external_ids = record.get("externalIds") or {}
+    raw_ids = record.get("externalIds") or {}
+    external_ids = {k: str(v) for k, v in raw_ids.items() if v is not None}
     authors = [item.get("name") for item in record.get("authors", []) if item.get("name")]
     return StudyRecord(
         source="semantic_scholar",
@@ -234,9 +237,13 @@ async def fetch_semantic_scholar(
                     headers=headers,
                 )
             except httpx.HTTPStatusError as exc:
-                if exc.response is not None and exc.response.status_code == 429:
-                    print("Semantic Scholar rate limit hit; skipping remaining pages.")
-                    break
+                if exc.response is not None:
+                    if exc.response.status_code == 429:
+                        print("Semantic Scholar rate limit hit; skipping remaining pages.")
+                        break
+                    if exc.response.status_code == 400:
+                        # Offset out of bounds (no more results)
+                        break
                 raise
 
             payload = response.json()
@@ -247,6 +254,55 @@ async def fetch_semantic_scholar(
             await asyncio.sleep(0.5)
 
     return results
+
+
+async def enrich_missing_dois(
+    records: list[StudyRecord],
+    *,
+    api_key: str,
+    max_records: int = 50,
+    timeout: float = 30.0,
+) -> None:
+    fields = "title,externalIds,paperId"
+    headers = {"User-Agent": "LONTAR/1.0", "x-api-key": api_key}
+    pending = [record for record in records if not record.doi and record.title]
+    if not pending:
+        return
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for record in pending[:max_records]:
+            params = {
+                "query": record.title,
+                "limit": 1,
+                "fields": fields,
+            }
+            try:
+                response = await request_with_retries(
+                    client,
+                    "GET",
+                    SEMANTIC_SCHOLAR_BASE_URL,
+                    params=params,
+                    headers=headers,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response is not None and exc.response.status_code == 429:
+                    print("Semantic Scholar rate limit hit; stopping DOI enrichment.")
+                    break
+                raise
+
+            payload = response.json()
+            hits = payload.get("data") or []
+            if hits:
+                hit = hits[0]
+                external_ids = hit.get("externalIds") or {}
+                doi = normalize_doi(external_ids.get("DOI"))
+                if doi:
+                    record.doi = doi
+                    record.external_ids.update(external_ids)
+                    paper_id = hit.get("paperId")
+                    if paper_id:
+                        record.external_ids["semantic_scholar"] = paper_id
+            await asyncio.sleep(0.2)
 
 
 def parse_pubmed_xml(xml_text: str) -> list[dict]:
@@ -381,53 +437,64 @@ async def ingest_ingredients(
     pubmed_pages: int = 2,
     core_pages: int = 2,
     per_page: int = 25,
+    enrich_semantic_doi: bool = True,
 ) -> list[StudyRecord]:
     load_dotenv()
-
-    query = build_query(ingredients, focus=focus)
-    if not query:
-        return []
 
     openalex_mailto = os.getenv("OPENALEX_EMAIL")
     semantic_scholar_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     core_key = os.getenv("CORE_API_KEY")
 
-    openalex_task = fetch_openalex(
-        query,
-        per_page=per_page,
-        max_pages=openalex_pages,
-        mailto=openalex_mailto,
-    )
-    sem_task = fetch_semantic_scholar(
-        query,
-        per_page=per_page,
-        max_pages=semantic_scholar_pages,
-        api_key=semantic_scholar_key,
-    )
-    pubmed_task = fetch_pubmed(
-        query,
-        per_page=per_page,
-        max_pages=pubmed_pages,
-    )
-    core_task = fetch_core(
-        query,
-        per_page=per_page,
-        max_pages=core_pages,
-        api_key=core_key,
-    )
-
-    openalex_results, semantic_results, pubmed_results, core_results = await asyncio.gather(
-        openalex_task,
-        sem_task,
-        pubmed_task,
-        core_task,
-    )
+    ingredients_list = [ing.strip() for ing in ingredients if ing.strip()]
+    if not ingredients_list:
+        return []
 
     mapped: list[StudyRecord] = []
-    mapped.extend(map(map_openalex_record, openalex_results))
-    mapped.extend(map(map_semantic_scholar_record, semantic_results))
-    mapped.extend(map(map_pubmed_record, pubmed_results))
-    mapped.extend(map(map_core_record, core_results))
+    for ingredient in ingredients_list:
+        query = build_query([ingredient], focus=focus)
+        if not query:
+            continue
+        print(f"Fetching literature for: {ingredient}...")
+        openalex_task = fetch_openalex(
+            query,
+            per_page=per_page,
+            max_pages=openalex_pages,
+            mailto=openalex_mailto,
+        )
+        sem_task = fetch_semantic_scholar(
+            query,
+            per_page=per_page,
+            max_pages=semantic_scholar_pages,
+            api_key=semantic_scholar_key,
+        )
+        pubmed_task = fetch_pubmed(
+            query,
+            per_page=per_page,
+            max_pages=pubmed_pages,
+        )
+        core_task = fetch_core(
+            query,
+            per_page=per_page,
+            max_pages=core_pages,
+            api_key=core_key,
+        )
+
+        openalex_results, semantic_results, pubmed_results, core_results = await asyncio.gather(
+            openalex_task,
+            sem_task,
+            pubmed_task,
+            core_task,
+        )
+
+        mapped.extend(map(map_openalex_record, openalex_results))
+        mapped.extend(map(map_semantic_scholar_record, semantic_results))
+        mapped.extend(map(map_pubmed_record, pubmed_results))
+        mapped.extend(map(map_core_record, core_results))
+        
+        await asyncio.sleep(1.0)  # Respect rate limits between ingredients
+
+    if semantic_scholar_key and enrich_semantic_doi:
+        await enrich_missing_dois(mapped, api_key=semantic_scholar_key)
     return dedupe_records(mapped)
 
 
@@ -495,6 +562,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional research focus used to shape repository queries.",
     )
     parser.add_argument(
+        "--semantic-doi-enrich",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use Semantic Scholar to fill missing DOIs.",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path("data") / "ingestion.json",
@@ -515,6 +588,7 @@ def main() -> None:
             core_pages=args.core_pages,
             per_page=args.per_page,
             focus=args.focus,
+            enrich_semantic_doi=args.semantic_doi_enrich,
         )
     )
     save_records(fetched, args.out)

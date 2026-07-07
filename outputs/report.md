@@ -3,24 +3,21 @@
 ## Commercial Health Claim Matrix
 | Ingredient | Claim | Evidence DOIs | Evidence Titles |
 | --- | --- | --- | --- |
-| Turmeric | Antioxidant | https://doi.org/10.1080/10408398.2015.1077195 | Curcumin, an active component of turmeric (Curcuma longa), and its effects on health |
-| Turmeric | Anti-inflammatory | https://doi.org/10.1080/10408398.2015.1077195 | Curcumin, an active component of turmeric (Curcuma longa), and its effects on health |
-| Turmeric | Anticancer | https://doi.org/10.1080/10408398.2015.1077195 | Curcumin, an active component of turmeric (Curcuma longa), and its effects on health |
-| Turmeric | Hypoglycemic | https://doi.org/10.1021/jf0483873, https://doi.org/10.1016/j.foodchem.2026.149731 | Curcuminoids and Sesquiterpenoids in Turmeric (Curcuma longa L.) Suppress an Increase in Blood Glucose Level in Type 2 Diabetic KK-AyMice; Inhibition effects and mechanisms of three curcuminoids against α-glucosidase |
+| hemp seeds | antimicrobial and antibiotic-enhancing activities | https://doi.org/10.3390/plants15010027 | Phenolic Constituents Drive Antimicrobial and Antibiotic-Enhancing Activities of |
+| hemp seeds | dipeptidyl-peptidase IV inhibitory peptides | https://doi.org/10.1039/d5fo02421h | Identification, characterization and resistance to digestion assessment of hemp-derived dipeptidyl-peptidase IV inhibitory peptides. |
+| turmeric | medicinal properties | https://doi.org/10.1155/jnme/9985642 | A Review of Curcumin in Chronic Disease Management: Anti-Inflammatory Pathways, Antioxidant Activity, and Therapeutic Advances. |
+| ginger | anticonvulsant potential | https://doi.org/10.3389/fphar.2026.1740324 | Studies on the anticonvulsant potential of 6-gingerol, an active ingredient of ginger rhizome. |
 
 ## Synergy Coefficients
-- Ingredients: Turmeric, Curcumin
-  - Mechanism: PPAR-gamma activation
-  - Evidence DOIs: 10.1021/jf0483873
+- Ingredients: hemp seeds, turmeric, ginger
+  - Mechanism: antimicrobial, antioxidant, and anti-inflammatory properties
+  - Evidence DOIs: 10.3390/plants15010027, 10.1039/d5fo02421h, 10.1155/jnme/9985642, 10.3389/fphar.2026.1740324
 
 ## Safety & Dosage Dossier
-- Ingredient: Turmeric
-  - Guidance: Non-toxic and safe for human consumption, especially in oral administration
-  - Evidence DOIs: 10.1002/ptr.6054
-- Ingredient: Curcumin
-  - Guidance: Safe at the dose of 6 g/day orally for 4-7 weeks
-  - Evidence DOIs: 10.1002/ptr.6054
+- Ingredient: yellow mustard powder
+  - Guidance: 0.2-1.0% (w/w) in food products
+  - Evidence DOIs: 10.1111/ijfs.17365
 
 ## Limitations
-- More studies are needed to confirm the efficacy and safety of turmeric and curcumin in humans
-- The bioavailability of curcumin is low, which may limit its therapeutic effects
+- limited studies on human subjects
+- variable bioavailability of ingredients
